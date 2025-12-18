@@ -246,3 +246,9 @@ async def session_details_csv(session_id: str):
             f"{r['user_id']},{r['segments']},{r['total_seconds']},{r['first_join']},{r['last_seen']}"
         )
     return "\n".join(lines)
+
+@app.get("/health")
+async def health():
+    if pool is None:
+        raise HTTPException(status_code=500, detail="DB not ready")
+    return {"status": "ok"}
