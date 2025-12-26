@@ -252,3 +252,41 @@ async def health():
     if pool is None:
         raise HTTPException(status_code=500, detail="DB not ready")
     return {"status": "ok"}
+
+from fastapi.responses import JSONResponse
+
+@app.get("/sessions/{session_id}/summary")
+async def session_summary(session_id: str):
+    if pool is None:
+        raise HTTPException(status_code=500, detail="DB not ready")
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                user_id,
+                segments,
+                total_seconds,
+                first_join,
+                last_seen
+            FROM session_user_summary
+            WHERE session_id = $1
+            ORDER BY total_seconds DESC
+            """,
+            session_id,
+        )
+
+    # convert asyncpg Records into normal JSON-safe dicts
+    data = []
+    for r in rows:
+        data.append(
+            {
+                "user_id": r["user_id"],
+                "segments": r["segments"],
+                "total_seconds": r["total_seconds"],
+                "first_join": r["first_join"].isoformat() if r["first_join"] else None,
+                "last_seen": r["last_seen"].isoformat() if r["last_seen"] else None,
+            }
+        )
+
+    return JSONResponse(content=data)
