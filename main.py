@@ -1,4 +1,5 @@
 from fastapi import Body
+from fastapi.middleware.cors import CORSMiddleware
 import hashlib
 import hmac
 import os
@@ -44,6 +45,14 @@ if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL environment variable is required")
 
 app = FastAPI(title="Zoom Attendance MVP")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # later you can lock this down
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 pool: Optional[asyncpg.Pool] = None
 
 
