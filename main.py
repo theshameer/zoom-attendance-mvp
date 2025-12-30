@@ -3,11 +3,14 @@ import hashlib
 import hmac
 import os
 from datetime import datetime, timezone
+from datetime import date
+from fastapi.responses import JSONResponse
 from typing import Optional
 
 import asyncpg
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, validator
+from fastapi.responses import JSONResponse
 
 import logging
 
@@ -188,6 +191,27 @@ async def list_sessions():
     return [dict(r) for r in rows]
 
 
+
+@app.get("/sessions")
+async def list_sessions(limit: int = 20):
+    if pool is None:
+        raise HTTPException(status_code=500, detail="DB not ready")
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT session_id
+            FROM sessions
+            ORDER BY session_id DESC
+            LIMIT $1
+            """,
+            limit
+        )
+
+    return JSONResponse(content=[{"session_id": r["session_id"]} for r in rows])
+
+
+
 @app.get("/sessions/{session_id}")
 async def session_details(session_id: str):
     """
@@ -253,7 +277,58 @@ async def health():
         raise HTTPException(status_code=500, detail="DB not ready")
     return {"status": "ok"}
 
-from fastapi.responses import JSONResponse
+@app.get("/daily/{day}/summary")
+async def daily_summary(day: str):
+    """
+    day format: YYYY-MM-DD
+    Example: /daily/2025-12-29/summary
+    """
+    if pool is None:
+        raise HTTPException(status_code=500, detail="DB not ready")
+
+    # Parse the day safely
+    try:
+        d = date.fromisoformat(day)  # expects YYYY-MM-DD
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date. Use YYYY-MM-DD")
+
+    start = datetime(d.year, d.month, d.day, 0, 0, 0, tzinfo=timezone.utc)
+    end = start.replace(hour=23, minute=59, second=59)
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                user_id,
+                COUNT(*) AS segments,
+                SUM(duration_sec) AS total_seconds,
+                MIN(join_time) AS first_join,
+                MAX(COALESCE(leave_time, NOW())) AS last_seen
+            FROM attendance_segments
+            WHERE join_time >= $1 AND join_time <= $2
+              AND leave_time IS NOT NULL
+            GROUP BY user_id
+            ORDER BY total_seconds DESC
+            """,
+            start,
+            end
+        )
+
+    data = []
+    for r in rows:
+        data.append({
+            "user_id": r["user_id"],
+            "segments": int(r["segments"] or 0),
+            "total_seconds": int(r["total_seconds"] or 0),
+            "first_join": r["first_join"].isoformat() if r["first_join"] else None,
+            "last_seen": r["last_seen"].isoformat() if r["last_seen"] else None,
+        })
+
+    return JSONResponse(content=data)
+
+
+
+
 
 @app.get("/sessions/{session_id}/summary")
 async def session_summary(session_id: str):
