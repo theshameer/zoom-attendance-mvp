@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from typing import Optional
 
 import asyncpg
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Header
 from pydantic import BaseModel, Field, validator
 from fastapi.responses import JSONResponse
 
@@ -52,6 +52,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+API_KEY = os.getenv("API_KEY")
+
+def require_api_key(x_api_key: str | None):
+    # If API_KEY isn't set, don't block (useful while developing)
+    if not API_KEY:
+        return
+    if x_api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
 
 pool: Optional[asyncpg.Pool] = None
 
@@ -287,7 +297,8 @@ async def health():
     return {"status": "ok"}
 
 @app.get("/daily/{day}/summary")
-async def daily_summary(day: str):
+async def daily_summary(date: str, x_api_key: str | None = Header(default=None)):
+    require_api_key(x_api_key)
     """
     day format: YYYY-MM-DD
     Example: /daily/2025-12-29/summary
@@ -340,7 +351,8 @@ async def daily_summary(day: str):
 
 
 @app.get("/sessions/{session_id}/summary")
-async def session_summary(session_id: str):
+async def session_summary(session_id: str, x_api_key: str | None = Header(default=None)):
+    require_api_key(x_api_key)
     if pool is None:
         raise HTTPException(status_code=500, detail="DB not ready")
 
