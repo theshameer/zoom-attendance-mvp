@@ -1,5 +1,6 @@
 from fastapi import Body
 from fastapi.middleware.cors import CORSMiddleware
+from datetime import date as dt_date
 import hashlib
 import hmac
 import os
@@ -296,7 +297,7 @@ async def health():
         raise HTTPException(status_code=500, detail="DB not ready")
     return {"status": "ok"}
 
-@app.get("/daily/{date}/summary")
+@app.get("/daily/{day}/summary")
 async def daily_summary(date: str, x_api_key: str | None = Header(default=None)):
     require_api_key(x_api_key)
     """
@@ -333,6 +334,8 @@ async def daily_summary(date: str, x_api_key: str | None = Header(default=None))
             start,
             end
         )
+        if not rows:
+            return []
 
     data = []
     for r in rows:
