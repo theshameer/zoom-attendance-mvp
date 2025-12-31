@@ -298,7 +298,7 @@ async def health():
     return {"status": "ok"}
 
 @app.get("/daily/{day}/summary")
-async def daily_summary(date: str, x_api_key: str | None = Header(default=None)):
+async def daily_summary(day: str, x_api_key: str | None = Header(default=None)):
     require_api_key(x_api_key)
     """
     day format: YYYY-MM-DD
