@@ -1,4 +1,4 @@
-from fastapi import Body
+1from fastapi import Body
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import date as dt_date
 import hashlib
@@ -111,17 +111,29 @@ async def zoom_webhook(body: dict = Body(...)):
         return {"ok": True, "ignored": True}
 
     # ---- Parse Zoom payload into our normalized fields ----
+    # ---- Parse Zoom payload into our normalized fields ----
     obj = body.get("payload", {}).get("object", {}) or {}
 
-    session_id = obj.get("uuid") or str(obj.get("id"))
+    session_id = obj.get("uuid") or str(obj.get("id") or "")
     participant = obj.get("participant", {}) or {}
 
-    user_id = (
-        participant.get("email")
-        or participant.get("user_id")
+    # Normalize email (best stable ID if present)
+    email = participant.get("email")
+    email_norm = email.strip().lower() if isinstance(email, str) and email.strip() else None
+
+    # IMPORTANT: Zoom identifiers are inconsistent across join/leave.
+    # We store a "participant_key" and also store email if available.
+    participant_key = (
+        participant.get("participant_uuid")       # correct key
+        or participant.get("participant_id")
         or participant.get("id")
+        or participant.get("user_id")
+        or email_norm
         or "unknown"
     )
+
+    # We keep user_id for your summaries (email if available; otherwise participant_key)
+    user_id = email_norm or str(participant_key)
 
     # timestamp parsing helper (Zoom sometimes gives ms int)
     def to_dt(v) -> datetime:
@@ -135,11 +147,11 @@ async def zoom_webhook(body: dict = Body(...)):
         return datetime.now(timezone.utc)
 
     if event == "meeting.participant_joined":
-        event_type = "join"
         ts = to_dt(participant.get("join_time") or body.get("event_ts"))
+        event_type = "join"
     else:
-        event_type = "leave"
         ts = to_dt(participant.get("leave_time") or body.get("event_ts"))
+        event_type = "leave"
 
     if pool is None:
         raise HTTPException(status_code=500, detail="Database not ready")
@@ -151,39 +163,52 @@ async def zoom_webhook(body: dict = Body(...)):
             if event_type == "join":
                 await conn.execute(
                     """
-                    INSERT INTO attendance_segments (session_id, user_id, join_time)
-                    VALUES ($1, $2, $3)
+                    INSERT INTO attendance_segments (session_id, user_id, participant_key, email, join_time)
+                    VALUES ($1, $2, $3, $4, $5)
                     """,
-                    session_id, user_id, ts
+                    session_id, user_id, participant_key, email_norm, ts
                 )
-                return {"ok": True, "action": "segment_opened"}
+                return {
+                    "ok": True,
+                    "action": "segment_opened",
+                    "session_id": session_id,
+                    "user_id": user_id,
+                    "participant_key": participant_key,
+                    "email": email_norm,
+                }
 
-            row = await conn.fetchrow(
-                """
-                SELECT id, join_time
-                FROM attendance_segments
-                WHERE session_id = $1 AND user_id = $2 AND leave_time IS NULL
-                ORDER BY join_time DESC
-                LIMIT 1
-                """,
-                session_id, user_id
-            )
-
-            if not row:
-                return {"ok": True, "action": "no_open_segment"}
-
-            duration = int((ts - row["join_time"]).total_seconds())
-
-            await conn.execute(
+            # CLOSE the most recent open segment for this session.
+            # Match in order: participant_key, then email, then user_id fallback.
+            result = await conn.execute(
                 """
                 UPDATE attendance_segments
-                SET leave_time = $1, duration_sec = $2
-                WHERE id = $3
+                SET
+                    leave_time = $1,
+                    duration_sec = GREATEST(0, EXTRACT(EPOCH FROM ($1 - join_time))::int)
+                WHERE session_id = $2
+                  AND leave_time IS NULL
+                  AND (
+                        participant_key = $3
+                     OR ($4 IS NOT NULL AND email = $4)
+                     OR user_id = $5
+                  )
                 """,
-                ts, duration, row["id"]
+                ts, session_id, participant_key, email_norm, user_id
             )
 
-            return {"ok": True, "action": "segment_closed", "duration_sec": duration}
+            return {
+                "ok": True,
+                "action": "segments_closed",
+                "db_result": result,
+                "session_id": session_id,
+                "user_id": user_id,
+                "participant_key": participant_key,
+                "email": email_norm,
+            }
+
+
+
+
 
 
 @app.get("/sessions")
